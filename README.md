@@ -17,6 +17,8 @@ npx supabase db push           # or run supabase/migrations/*.sql in the SQL edi
 npm run dev
 ```
 
+Deploying to Vercel + Supabase: see [DEPLOY.md](DEPLOY.md).
+
 See [docs/supabase-rls.md](docs/supabase-rls.md) for auth, realtime and the security model.
 
 ## System design
