@@ -1,0 +1,228 @@
+openapi: 3.0.3
+info:
+  title: ShareWallet Payments API
+  version: 1.0.0
+  description: |
+    All endpoints require a Supabase session cookie (set by `/auth/callback`).
+    Every ledger write runs inside a Postgres function, so each call is atomic.
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    supabaseSession:
+      type: apiKey
+      in: cookie
+      name: sb-<project-ref>-auth-token
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        issues: { type: array, items: { type: object } }
+      required: [error]
+    Transaction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        wallet_id: { type: string, format: uuid }
+        initiated_by: { type: string, format: uuid, nullable: true }
+        amount: { type: number }
+        merchant_name: { type: string }
+        category: { type: string }
+        status: { type: string, enum: [pending, approved, rejected, completed] }
+        created_at: { type: string, format: date-time }
+    ApprovalRequest:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        transaction_id: { type: string, format: uuid }
+        wallet_id: { type: string, format: uuid }
+        requester_id: { type: string, format: uuid }
+        required_approvals: { type: integer }
+        current_approvals: { type: integer }
+        status: { type: string, enum: [pending, approved, rejected] }
+        created_at: { type: string, format: date-time }
+  responses:
+    Unauthorized:
+      description: No signed-in user
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: Not a member, or not allowed for this role
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Invalid:
+      description: Request body failed validation
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+security:
+  - supabaseSession: []
+paths:
+  /payments/transact:
+    post:
+      summary: Make a purchase from a shared wallet
+      description: |
+        Admins are charged immediately (`200`, status `completed`).
+        Members create a pending transaction plus an approval request (`202`, status `pending_approval`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [walletId, amount, merchantName, category]
+              properties:
+                walletId: { type: string, format: uuid }
+                amount: { type: number, minimum: 0.01, multipleOf: 0.01 }
+                merchantName: { type: string, maxLength: 120 }
+                category: { type: string, maxLength: 60 }
+      responses:
+        '200':
+          description: Admin purchase completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  status: { type: string, enum: [completed] }
+                  transaction: { $ref: '#/components/schemas/Transaction' }
+        '202':
+          description: Member purchase awaiting approval
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  status: { type: string, enum: [pending_approval] }
+                  requestId: { type: string, format: uuid }
+                  request: { $ref: '#/components/schemas/ApprovalRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Insufficient wallet balance (admin purchase)
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '422': { $ref: '#/components/responses/Invalid' }
+  /payments/approvals/{requestId}/vote:
+    post:
+      summary: Approve or reject a member's purchase
+      description: |
+        When approvals reach `required_approvals` the purchase executes in the same database
+        transaction. When enough members reject that the threshold can no longer be reached,
+        the request and its transaction are rejected.
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approved, rejected] }
+      responses:
+        '200':
+          description: Vote recorded; returns the updated request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  request: { $ref: '#/components/schemas/ApprovalRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Voting on your own request
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '404':
+          description: Request not found or not visible to you
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '409':
+          description: Already voted, already resolved, or the approval would overdraw the wallet (vote not recorded)
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '422': { $ref: '#/components/responses/Invalid' }
+  /wallets:
+    post:
+      summary: Create a wallet (caller becomes admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 80 }
+                currency: { type: string, minLength: 3, maxLength: 3, default: USD }
+                approvalThreshold: { type: integer, minimum: 1, maximum: 20, default: 2 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  walletId: { type: string, format: uuid }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Invalid' }
+  /wallets/{walletId}/deposit:
+    post:
+      summary: Add funds (admin only)
+      parameters:
+        - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { type: number, minimum: 0.01, multipleOf: 0.01 }
+      responses:
+        '200':
+          description: New balance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  balance: { type: number }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Invalid' }
+  /wallets/{walletId}/members:
+    post:
+      summary: Add a registered user to the wallet by email (admin only)
+      parameters:
+        - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '201':
+          description: Member added (or already a member)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  userId: { type: string, format: uuid }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No user has signed up with that email
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '422': { $ref: '#/components/responses/Invalid' }

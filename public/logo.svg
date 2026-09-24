@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ShareWallet">
+  <!-- Admin arc (solid) and consensus arc (translucent) interlocking into a wallet -->
+  <rect x="6" y="16" width="38" height="34" rx="11" fill="#FF6B00"/>
+  <rect x="20" y="14" width="38" height="34" rx="11" fill="#FF9E00" fill-opacity="0.75"/>
+  <!-- Negative-space checkmark -->
+  <path d="M22 33l7 7 14-15" fill="none" stroke="#FFFFFF" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
